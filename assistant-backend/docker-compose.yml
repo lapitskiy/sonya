@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: assistant_postgres
+    environment:
+      POSTGRES_DB: assistant
+      POSTGRES_USER: assistant
+      POSTGRES_PASSWORD: assistant
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U assistant -d assistant"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    container_name: assistant_api
+    ports:
+      - "${API_PORT:-18000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://assistant:assistant@postgres:5432/assistant
+    restart: unless-stopped
+
+  worker:
+    build: ./worker
+    container_name: assistant_worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://assistant:assistant@postgres:5432/assistant
+      WORKER_POLL_SECONDS: "${WORKER_POLL_SECONDS:-2}"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
