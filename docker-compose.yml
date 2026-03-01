@@ -1,4 +1,4 @@
-version: "3.9"
+name: sonya
 
 services:
   postgres:
@@ -19,8 +19,24 @@ services:
       retries: 20
     restart: unless-stopped
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: assistant_keycloak
+    # No realm import: create your own realm/users via Admin Console
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KEYCLOAK_ADMIN: "${KEYCLOAK_ADMIN:-admin}"
+      KEYCLOAK_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: "xforwarded"
+    ports:
+      - "${KEYCLOAK_PORT:-18080}:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+    restart: unless-stopped
+
   api:
-    build: ./api
+    build: ./assistant-backend/api
     container_name: assistant_api
     ports:
       - "${API_PORT:-18000}:8000"
@@ -29,10 +45,22 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+psycopg2://assistant:assistant@postgres:5432/assistant
+      KEYCLOAK_URL: "http://keycloak:8080"
+      KEYCLOAK_REALM: "${NEXT_PUBLIC_KEYCLOAK_REALM:-sonya}"
+      KEYCLOAK_CLIENT_ID: "${NEXT_PUBLIC_KEYCLOAK_CLIENT_ID:-ui-shell}"
+      # Set this after creating client ui-shell in Keycloak (Clients -> Credentials)
+      KEYCLOAK_CLIENT_SECRET: "${KEYCLOAK_CLIENT_SECRET:-}"
+      # IMPORTANT: leave empty by default so backend derives it from incoming request host.
+      KEYCLOAK_REDIRECT_URI: "${KEYCLOAK_REDIRECT_URI:-}"
+      UI_REDIRECT_URL: "${UI_REDIRECT_URL:-}"
+    volumes:
+      - ./assistant-backend/api/app:/app/app
+      - ./assistant-backend/api/app/utils_global:/app/utils_global
+      - ./assistant-backend/assistant:/app/assistant
     restart: unless-stopped
 
   worker:
-    build: ./worker
+    build: ./assistant-backend/api
     container_name: assistant_worker
     depends_on:
       postgres:
@@ -40,8 +68,36 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://assistant:assistant@postgres:5432/assistant
       WORKER_POLL_SECONDS: "${WORKER_POLL_SECONDS:-2}"
+    volumes:
+      - ./assistant-backend/apps:/app/apps
+      - ./assistant-backend/api/app/utils_global:/app/utils_global
+      - ./assistant-backend/assistant:/app/assistant
+    command: ["python", "-m", "apps.worker.main"]
+    restart: unless-stopped
+
+  ui:
+    image: node:20-alpine
+    container_name: assistant_ui
+    working_dir: /app
+    environment:
+      # Leave gateway empty by default: UI derives API base from window.location (host:18000),
+      # which works both for LAN access (192.168.x.x) and ssh port-forwarding (localhost).
+      NEXT_PUBLIC_GATEWAY_URL: "${NEXT_PUBLIC_GATEWAY_URL:-}"
+      # Keycloak for this project (service 'keycloak' in this compose)
+      # Leave empty by default: UI derives from window.location.hostname + :18080
+      NEXT_PUBLIC_KEYCLOAK_URL: "${NEXT_PUBLIC_KEYCLOAK_URL:-}"
+      NEXT_PUBLIC_KEYCLOAK_REALM: "${NEXT_PUBLIC_KEYCLOAK_REALM:-sonya}"
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: "${NEXT_PUBLIC_KEYCLOAK_CLIENT_ID:-ui-shell}"
+    volumes:
+      - ./ui-shell:/app
+      - ui_node_modules:/app/node_modules
+    ports:
+      - "${UI_PORT:-13000}:3000"
+    command: ["sh", "-lc", "npm install --no-audit --no-fund && npm run dev -- -H 0.0.0.0 -p 3000"]
     restart: unless-stopped
 
 volumes:
   pgdata:
+  ui_node_modules:
+  keycloak_data:
 

@@ -1,19 +1,16 @@
+"""Reminder domain entities."""
+
 from dataclasses import dataclass
-from datetime import datetime
+
+from .value_objects import ReminderId, ReminderStatus, Trigger
 
 
 @dataclass(frozen=True)
 class Reminder:
+    """Reminder entity (pure domain, no IO)."""
+    id: ReminderId
     device_id: str
     text: str
-    due_at: datetime
-
-
-@dataclass(frozen=True)
-class GeoTrigger:
-    device_id: str
-    text: str
-    lat: float
-    lon: float
-    radius_m: int
+    trigger: Trigger
+    status: ReminderStatus
 

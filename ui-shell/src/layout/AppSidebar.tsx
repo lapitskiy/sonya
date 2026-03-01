@@ -79,6 +79,26 @@ const navItems: NavItem[] = [
       },
     ],
   },
+  {
+    name: "Что говорил",
+    icon: <ListIcon />,
+    subItems: [{ name: "Все запросы", path: "/modules/what-said/requests" }],
+  },
+  {
+    name: "Места",
+    icon: <ListIcon />,
+    subItems: [{ name: "Все места", path: "/modules/places" }],
+  },
+  {
+    name: "Задачи",
+    icon: <ListIcon />,
+    subItems: [{ name: "Все задачи", path: "/modules/tasks" }],
+  },
+  {
+    name: "Настройки",
+    icon: <PlugInIcon />,
+    subItems: [{ name: "Переменные", path: "/settings/variables" }],
+  },
 ];
 
 const othersItems: NavItem[] = [

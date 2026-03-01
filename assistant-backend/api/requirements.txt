@@ -4,4 +4,5 @@ sqlalchemy>=2.0
 psycopg2-binary
 pydantic
 python-dateutil
+alembic>=1.13
 

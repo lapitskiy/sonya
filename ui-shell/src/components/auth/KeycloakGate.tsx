@@ -1,6 +1,5 @@
 "use client";
 
-import { getKeycloak } from "@/lib/keycloak";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
 
@@ -14,36 +13,18 @@ export default function KeycloakGate({ children }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const kc = getKeycloak();
-
     (async () => {
       try {
-        const authenticated = await kc.init({
-          onLoad: "login-required",
-          pkceMethod: "S256",
-          checkLoginIframe: false,
-        });
+        // MVP: server-side callback sets cookie sonya_session=<id>.
+        // If it's missing, send user to /signin.
+        const hasSession =
+          typeof document !== "undefined" &&
+          document.cookie.split(";").some((c) => c.trim().startsWith("sonya_session_present="));
 
-        if (!authenticated) {
-          await kc.login();
+        if (!hasSession) {
+          router.push("/signin");
           return;
         }
-
-        // Make token available to client-side API calls
-        (window as any).__hubcrmAccessToken = kc.token;
-
-        // Refresh loop
-        const interval = window.setInterval(async () => {
-          try {
-            const refreshed = await kc.updateToken(30);
-            if (refreshed) {
-              (window as any).__hubcrmAccessToken = kc.token;
-            }
-          } catch {
-            window.clearInterval(interval);
-            await kc.login();
-          }
-        }, 10_000);
 
         setReady(true);
       } catch (e: any) {

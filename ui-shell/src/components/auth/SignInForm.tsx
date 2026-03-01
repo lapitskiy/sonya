@@ -1,16 +1,25 @@
 "use client";
 import Button from "@/components/ui/button/Button";
 import { ChevronLeftIcon } from "@/icons";
-import { getKeycloak } from "@/lib/keycloak";
+import { getKeycloakConfig } from "@/lib/keycloak";
 import Link from "next/link";
 import React from "react";
 
 export default function SignInForm() {
-  const onLogin = async () => {
-    const kc = getKeycloak();
-    await kc.login({
-      redirectUri: "http://localhost:3000/",
-    });
+  const onLogin = () => {
+    // Direct redirect to Keycloak login (bypasses Web Crypto requirement in browser).
+    // Redirect back to backend callback that will exchange code -> token and set cookie.
+    const cfg = getKeycloakConfig();
+    const redirectUri = encodeURIComponent(
+      `${window.location.protocol}//${window.location.hostname}:18000/auth/callback`
+    );
+    const loginUrl =
+      `${cfg.url}/realms/${cfg.realm}/protocol/openid-connect/auth` +
+      `?client_id=${cfg.clientId}` +
+      `&redirect_uri=${redirectUri}` +
+      `&response_type=code` +
+      `&scope=openid`;
+    window.location.href = loginUrl;
   };
 
   return (
