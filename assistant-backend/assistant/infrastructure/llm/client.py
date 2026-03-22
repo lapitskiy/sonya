@@ -398,6 +398,96 @@ class LLMClient:
         except Exception:
             return None
 
+    @staticmethod
+    def _has_temporal_marker(text: str) -> bool:
+        t = (text or "").lower()
+        if not t:
+            return False
+        weekday_words = (
+            "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+            "пн", "вт", "ср", "чт", "пт", "сб", "вс",
+        )
+        if any(w in t for w in ("сегодня", "завтра", "послезавтра", "утром", "днем", "днём", "вечером", "ночью")):
+            return True
+        if any(w in t for w in weekday_words):
+            return True
+        # "в 9", "в 21", "в 9:00"
+        if re.search(r"\bв\s*\d{1,2}(:\d{2})?\b", t):
+            return True
+        # Explicit hh:mm anywhere in text
+        if re.search(r"\b\d{1,2}:\d{2}\b", t):
+            return True
+        return False
+
+    @staticmethod
+    def _weekday_mentioned_without_explicit_time(text: str) -> bool:
+        t = (text or "").lower()
+        weekday_words = (
+            "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+            "пн", "вт", "ср", "чт", "пт", "сб", "вс",
+        )
+        if not any(w in t for w in weekday_words):
+            return False
+        if re.search(r"\b\d{1,2}:\d{2}\b", t) or re.search(r"\bв\s*\d{1,2}(:\d{2})?\b", t):
+            return False
+        if any(x in t for x in ("утром", "днем", "днём", "вечером", "ночью", "в обед")):
+            return False
+        return True
+
+    @staticmethod
+    def _pick_daytime_slot(text: str) -> tuple[int, int]:
+        # "Random-like" stable slot in 14:00..16:45, quarter minutes.
+        key = sum(ord(ch) for ch in (text or ""))
+        hours = (14, 15, 16)
+        minutes = (0, 15, 30, 45)
+        hour = hours[key % len(hours)]
+        minute = minutes[(key // len(hours)) % len(minutes)]
+        return hour, minute
+
+    @staticmethod
+    def _fallback_alarm_time(text: str, now: datetime) -> str:
+        t = (text or "").lower()
+        base = now if getattr(now, "tzinfo", None) else now.replace(tzinfo=timezone.utc)
+        target = base
+
+        if "послезавтра" in t:
+            target = target + timedelta(days=2)
+        elif "завтра" in t:
+            target = target + timedelta(days=1)
+
+        # hh:mm first, then "в 9"
+        hour = None
+        minute = None
+        m_hm = re.search(r"\b(\d{1,2}):(\d{2})\b", t)
+        if m_hm:
+            hour = int(m_hm.group(1))
+            minute = int(m_hm.group(2))
+        else:
+            m_h = re.search(r"\bв\s*(\d{1,2})\b", t)
+            if m_h:
+                hour = int(m_h.group(1))
+                minute = 0
+
+        if hour is None:
+            if "утром" in t:
+                hour, minute = 9, 0
+            elif "вечером" in t:
+                hour, minute = 20, 0
+            elif "днем" in t or "днём" in t:
+                hour, minute = 14, 0
+            elif LLMClient._weekday_mentioned_without_explicit_time(t):
+                hour, minute = LLMClient._pick_daytime_slot(t)
+            else:
+                dt = base + timedelta(hours=1)
+                return dt.replace(second=0, microsecond=0).isoformat()
+
+        hour = max(0, min(hour, 23))
+        minute = max(0, min(minute or 0, 59))
+        dt = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if dt <= base:
+            dt = dt + timedelta(days=1)
+        return dt.isoformat()
+
     def extract_nlu_json(
         self,
         text: str,
@@ -440,6 +530,15 @@ class LLMClient:
         obj1 = self._parse_json_object(content1) or {}
         typ = str(obj1.get("type") or "unknown").strip().lower()
         why1 = str(obj1.get("why") or "").strip() if isinstance(obj1, dict) else ""
+        if typ == "unknown" and self._has_temporal_marker(text):
+            # Guardrail: never keep unknown when the phrase contains time/date markers.
+            typ = "approx-alarm"
+            why1 = why1 or "есть время"
+            obj1 = dict(obj1) if isinstance(obj1, dict) else {}
+            obj1["type"] = "approx-alarm"
+            if not isinstance(obj1.get("why"), str) or not obj1.get("why", "").strip():
+                obj1["why"] = "есть время"
+
         if typ == "unknown":
             if why1:
                 return {"type": "unknown", "why": why1}
@@ -498,6 +597,9 @@ class LLMClient:
         if isinstance(obj1.get("text"), str) and obj1["text"].strip() and "text" not in out:
             out["text"] = obj1["text"].strip()
 
+        if typ in ("alarm", "approx-alarm") and not (isinstance(out.get("time"), str) and out["time"].strip()):
+            out["time"] = self._fallback_alarm_time(text, now)
+
         # Deterministic normalization: weekday phrases like "в воскресенье" should map to ближайший день,
         # not "next week", unless user explicitly said "следующее/через неделю".
         if typ in ("alarm", "approx-alarm") and isinstance(out.get("time"), str) and out["time"].strip():
@@ -524,7 +626,11 @@ class LLMClient:
                         # If LLM jumped by +7 days (or more), snap to ближайший weekday.
                         if (dt.date() - nearest).days >= 7:
                             dt = dt.replace(year=nearest.year, month=nearest.month, day=nearest.day)
-                            out["time"] = dt.isoformat()
+                # For weekday reminders without explicit time, avoid midnight default.
+                if self._weekday_mentioned_without_explicit_time(t) and dt.hour == 0 and dt.minute == 0:
+                    hh, mm = self._pick_daytime_slot(t)
+                    dt = dt.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                out["time"] = dt.isoformat()
             except Exception:
                 pass
         return out or {"type": "unknown"}
